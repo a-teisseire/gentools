@@ -19,6 +19,21 @@ import (
 	"github.com/Bo0mer/gentools/pkg/transformation"
 )
 
+var supportedLoggers = []string{
+	"go_kit_log",
+	"zap",
+}
+
+func isLoggerSupported(loggerType string) bool {
+	for _, val := range supportedLoggers {
+		if val == loggerType {
+			return true
+		}
+	}
+
+	return false
+}
+
 func init() {
 	flag.Usage = func() {
 		var out io.Writer = os.Stdout
@@ -36,24 +51,32 @@ func init() {
 	}
 }
 
-func parseArgs() (sourceDir, interfaceName string, err error) {
+func parseArgs() (sourceDir, interfaceName string, loggerType string, err error) {
 	flag.Parse()
-	if flag.NArg() != 2 {
-		return "", "", errors.New("too many arguments provided")
+	if flag.NArg() < 2 {
+		return "", "", "", errors.New("not enough arguments provided")
 	}
 
 	sourceDir = flag.Arg(0)
 	sourceDir, err = filepath.Abs(sourceDir)
 	if err != nil {
-		return "", "", fmt.Errorf("error determining absolute path to source directory: %v", err)
+		return "", "", "", fmt.Errorf("error determining absolute path to source directory: %v", err)
 	}
 	interfaceName = flag.Arg(1)
 
-	return sourceDir, interfaceName, nil
+	loggerType = supportedLoggers[0]
+	if flag.NArg() == 3 {
+		loggerType = flag.Arg(2)
+		if !isLoggerSupported(loggerType) {
+			return "", "", "", fmt.Errorf("unsupported logger type: %s", loggerType)
+		}
+	}
+
+	return sourceDir, interfaceName, loggerType, nil
 }
 
 func main() {
-	sourceDir, interfaceName, err := parseArgs()
+	sourceDir, interfaceName, loggerType, err := parseArgs()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -74,7 +97,7 @@ func main() {
 
 	typeName := fmt.Sprintf("errorLogging%s", interfaceName)
 
-	model := newModel(sourcePkgPath, interfaceName, typeName, targetPkg)
+	model := newModel(sourcePkgPath, interfaceName, loggerType, typeName, targetPkg)
 	generator := astgen.Generator{
 		Model:    model,
 		Locator:  locator,
@@ -233,17 +256,22 @@ type LoggingMethodBuilder struct {
 	methodConfig        *astgen.MethodConfig
 	method              *astgen.Method
 	contextPackageAlias string
+	logPackageAlias     string
+	loggerType          string
 }
 
-func NewLoggingMethodBuilder(structName string, methodConfig *astgen.MethodConfig, contextPackageAlias string) *LoggingMethodBuilder {
+func NewLoggingMethodBuilder(structName string, methodConfig *astgen.MethodConfig, contextPackageAlias string, logPackageAlias string, loggerType string) *LoggingMethodBuilder {
 	method := astgen.NewMethod(methodConfig.MethodName, "m", structName)
 
 	return &LoggingMethodBuilder{
 		methodConfig:        methodConfig,
 		method:              method,
+		loggerType:          loggerType,
 		contextPackageAlias: contextPackageAlias,
+		logPackageAlias:     logPackageAlias,
 	}
 }
+
 func (b *LoggingMethodBuilder) Build() ast.Decl {
 	b.method.SetType(&ast.FuncType{
 		Params: &ast.FieldList{
@@ -268,8 +296,12 @@ func (b *LoggingMethodBuilder) Build() ast.Decl {
 	if n > 0 {
 		last := b.methodConfig.MethodResults[n-1]
 		if id, ok := last.Type.(*ast.Ident); ok && id.Name == "error" {
-			s := b.conditionalLogMessageStatement(b.methodConfig.MethodName, last.Names[0].Name)
-			b.method.AddStatement(s)
+			switch b.loggerType {
+			case "go_kit_log":
+				b.method.AddStatement(b.conditionalLogMessageStatementKitLog(b.methodConfig.MethodName, last.Names[0].Name))
+			case "zap":
+				b.method.AddStatement(b.conditionalLogMessageStatementZap(b.methodConfig.MethodName, last.Names[0].Name))
+			}
 		}
 	}
 
@@ -296,106 +328,6 @@ func (b *LoggingMethodBuilder) contextArgName() (string, bool) {
 	}
 
 	return "", false
-}
-
-func (b *LoggingMethodBuilder) conditionalLogMessageStatement(methodName, errorResultName string) ast.Stmt {
-	// If the first parameter is context.Context, get additional log
-	// fields.
-	var additionalFieldsStmt ast.Stmt = &ast.EmptyStmt{}
-	var appendAdditionalFieldsStmt ast.Stmt = &ast.EmptyStmt{}
-	if ctxArgName, ok := b.contextArgName(); ok {
-		callExpr := &ast.CallExpr{
-			Fun: &ast.SelectorExpr{
-				X:   ast.NewIdent("m"), // receiver name
-				Sel: ast.NewIdent("fields"),
-			},
-			Args: []ast.Expr{ast.NewIdent(ctxArgName), ast.NewIdent(errorResultName)},
-		}
-
-		additionalFieldsStmt = &ast.AssignStmt{
-			Lhs: []ast.Expr{ast.NewIdent("_more")},
-			Tok: token.DEFINE,
-			Rhs: []ast.Expr{
-				callExpr,
-			},
-		}
-
-		// if len(_more) > 0 {
-
-		appendAdditionalFieldsStmt = &ast.IfStmt{
-			Cond: &ast.BinaryExpr{
-				X: &ast.CallExpr{
-					Fun:  ast.NewIdent("len"),
-					Args: []ast.Expr{ast.NewIdent("_more")},
-				},
-				Op: token.GTR,
-				Y:  ast.NewIdent("0"),
-			},
-			Body: &ast.BlockStmt{
-				List: []ast.Stmt{
-					// _fields = append(_fields, _more...)
-					&ast.AssignStmt{
-						Lhs: []ast.Expr{ast.NewIdent("_fields")},
-						Tok: token.ASSIGN,
-						Rhs: []ast.Expr{
-							&ast.CallExpr{
-								Fun:  ast.NewIdent("append"),
-								Args: []ast.Expr{ast.NewIdent("_fields"), ast.NewIdent("_more...")},
-							},
-						},
-					},
-				},
-			},
-		}
-	}
-
-	assignStmt := &ast.AssignStmt{
-		Lhs: []ast.Expr{ast.NewIdent("_fields")},
-		Tok: token.DEFINE,
-		Rhs: []ast.Expr{
-			&ast.CompositeLit{
-				Type: &ast.ArrayType{
-					Elt: ast.NewIdent("interface{}"),
-				},
-				Elts: []ast.Expr{
-					&ast.BasicLit{Kind: token.STRING, Value: `"method"`},
-					&ast.BasicLit{Kind: token.STRING, Value: fmt.Sprintf("%q", methodName)},
-					&ast.BasicLit{Kind: token.STRING, Value: `"error"`},
-					&ast.CallExpr{
-						Fun: &ast.SelectorExpr{
-							X:   ast.NewIdent(errorResultName),
-							Sel: ast.NewIdent("Error"),
-						},
-					},
-				},
-			},
-		},
-	}
-
-	callLogExpr := &ast.CallExpr{
-		Fun: &ast.SelectorExpr{
-			X:   &ast.SelectorExpr{X: ast.NewIdent("m"), Sel: ast.NewIdent("logger")},
-			Sel: ast.NewIdent("Log"),
-		},
-		Args: []ast.Expr{
-			ast.NewIdent("_fields..."),
-		},
-	}
-
-	return &ast.IfStmt{
-		Cond: &ast.BinaryExpr{
-			X:  ast.NewIdent(errorResultName),
-			Op: token.NEQ,
-			Y:  ast.NewIdent("nil"),
-		},
-		Body: &ast.BlockStmt{
-			List: []ast.Stmt{
-				assignStmt,
-				additionalFieldsStmt,
-				appendAdditionalFieldsStmt,
-				&ast.ExprStmt{X: callLogExpr}},
-		},
-	}
 }
 
 type MethodInvocation struct {

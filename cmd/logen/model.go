@@ -16,9 +16,12 @@ type model struct {
 	strct       *astgen.Struct
 
 	contextPackageAlias string
+	timePackageAlias    string
+	loggerType          string
+	logPackageAlias		string
 }
 
-func newModel(interfacePath, interfaceName, structName, targetPkg string) *model {
+func newModel(interfacePath, interfaceName, loggerType, structName, targetPkg string) *model {
 	file := astgen.NewFile(targetPkg)
 	strct := astgen.NewStruct(structName)
 	file.AppendDeclaration(strct)
@@ -27,16 +30,28 @@ func newModel(interfacePath, interfaceName, structName, targetPkg string) *model
 		fileBuilder: file,
 		structName:  structName,
 		strct:       strct,
+		loggerType:  loggerType,
 	}
+
 	sourcePackageAlias := m.AddImport("", interfacePath)
-	logPackageAlias := m.AddImport("", "github.com/go-kit/kit/log")
 	m.contextPackageAlias = m.AddImport("", "context")
 
-	constructorBuilder := newConstructorBuilder(logPackageAlias, sourcePackageAlias, interfaceName, m.contextPackageAlias)
+	switch loggerType {
+	case "logrus":
+		m.logPackageAlias = m.AddImport("", "github.com/sirupsen/logrus")
+	case "go_kit_log":
+		m.logPackageAlias = m.AddImport("", "github.com/go-kit/kit/log")
+	case "zap":
+		m.logPackageAlias = m.AddImport("", "go.uber.org/zap")
+	case "stdlog":
+		m.logPackageAlias = m.AddImport("", "log")
+	}
+
+	constructorBuilder := newConstructorBuilder(m.logPackageAlias, sourcePackageAlias, interfaceName, m.contextPackageAlias)
 	file.AppendDeclaration(constructorBuilder)
 
 	strct.AddField("next", sourcePackageAlias, interfaceName)
-	strct.AddField("logger", logPackageAlias, "Logger")
+	strct.AddField("logger", m.logPackageAlias, "Logger")
 	strct.AddFieldWithType("fields", fieldsFuncType(m.contextPackageAlias))
 
 	return m
@@ -57,7 +72,7 @@ func (m *model) AddImport(pkgName, location string) string {
 }
 
 func (m *model) AddMethod(method *astgen.MethodConfig) error {
-	mmb := NewLoggingMethodBuilder(m.structName, method, m.contextPackageAlias)
+	mmb := NewLoggingMethodBuilder(m.structName, method, m.contextPackageAlias, m.logPackageAlias, m.loggerType)
 
 	m.fileBuilder.AppendDeclaration(mmb)
 	return nil
