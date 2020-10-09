@@ -6,6 +6,26 @@ import (
 	"go/token"
 )
 
+func getZapLoggerInfo(m *model) *loggerInfo {
+	alias := m.AddImport("", "go.uber.org/zap")
+	aliasCore := m.AddImport("", "go.uber.org/zap/zapcore")
+
+	return &loggerInfo{
+		name:         "zap",
+		packageAlias: alias,
+		loggerType:   &ast.StarExpr{
+			X: &ast.SelectorExpr{
+				X:   ast.NewIdent(alias),
+				Sel: ast.NewIdent("Logger"),
+			},
+		},
+		fieldsType:   &ast.SelectorExpr{
+			X:   ast.NewIdent(aliasCore),
+			Sel: ast.NewIdent("Field"),
+		},
+	}
+}
+
 func (b *LoggingMethodBuilder)  conditionalLogMessageStatementZap(methodName, errorResultName string) ast.Stmt {
 	// If the first parameter is context.Context, get additional log
 	// fields.
@@ -63,12 +83,12 @@ func (b *LoggingMethodBuilder)  conditionalLogMessageStatementZap(methodName, er
 		Rhs: []ast.Expr{
 			&ast.CompositeLit{
 				Type: &ast.ArrayType{
-					Elt: ast.NewIdent("interface{}"),
+					Elt: b.loggerInfo.fieldsType,
 				},
 				Elts: []ast.Expr{
 					&ast.CallExpr{
 						Fun: &ast.SelectorExpr{
-							X:   ast.NewIdent(b.logPackageAlias),
+							X:   ast.NewIdent(b.loggerInfo.packageAlias),
 							Sel: ast.NewIdent("String"),
 						},
 						Args: []ast.Expr{
@@ -78,7 +98,7 @@ func (b *LoggingMethodBuilder)  conditionalLogMessageStatementZap(methodName, er
 					},
 					&ast.CallExpr{
 						Fun: &ast.SelectorExpr{
-							X:   ast.NewIdent(b.logPackageAlias),
+							X:   ast.NewIdent(b.loggerInfo.packageAlias),
 							Sel: ast.NewIdent("Error"),
 						},
 						Args: []ast.Expr{
@@ -96,6 +116,7 @@ func (b *LoggingMethodBuilder)  conditionalLogMessageStatementZap(methodName, er
 			Sel: ast.NewIdent("Error"),
 		},
 		Args: []ast.Expr{
+			&ast.BasicLit{Kind: token.STRING, Value: fmt.Sprintf(`"%s failed"`, methodName)},
 			ast.NewIdent("_fields..."),
 		},
 	}

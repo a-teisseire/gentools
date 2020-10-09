@@ -157,14 +157,16 @@ type constructorBuilder struct {
 	interfacePackageName string
 	interfaceName        string
 	contextPackageName   string
+
+	loggerInfo			 *loggerInfo
 }
 
-func newConstructorBuilder(logPackageName, packageName, interfaceName, contextPackageName string) *constructorBuilder {
+func newConstructorBuilder(packageName, interfaceName, contextPackageName string, loggerInfo *loggerInfo) *constructorBuilder {
 	return &constructorBuilder{
-		logPackageName:       logPackageName,
 		interfacePackageName: packageName,
 		interfaceName:        interfaceName,
 		contextPackageName:   contextPackageName,
+		loggerInfo:			  loggerInfo,
 	}
 }
 
@@ -175,7 +177,7 @@ func (c *constructorBuilder) Build() ast.Decl {
 				Lhs: []ast.Expr{ast.NewIdent("f")},
 				Tok: token.DEFINE,
 				Rhs: []ast.Expr{&ast.CompositeLit{
-					Type: fieldsFuncType(c.contextPackageName),
+					Type: fieldsFuncType(c.contextPackageName, c.loggerInfo),
 					Elts: []ast.Expr{ast.NewIdent("return nil")},
 				}},
 			},
@@ -225,14 +227,11 @@ func (c *constructorBuilder) Build() ast.Decl {
 					},
 					&ast.Field{
 						Names: []*ast.Ident{ast.NewIdent("logger")},
-						Type: &ast.SelectorExpr{
-							X:   ast.NewIdent(c.logPackageName),
-							Sel: ast.NewIdent("Logger"),
-						},
+						Type: c.loggerInfo.loggerType,
 					},
 					&ast.Field{
 						Names: []*ast.Ident{ast.NewIdent("fields")},
-						Type:  &ast.Ellipsis{Elt: fieldsFuncType(c.contextPackageName)},
+						Type:  &ast.Ellipsis{Elt: fieldsFuncType(c.contextPackageName, c.loggerInfo)},
 					},
 				},
 			},
@@ -256,19 +255,17 @@ type LoggingMethodBuilder struct {
 	methodConfig        *astgen.MethodConfig
 	method              *astgen.Method
 	contextPackageAlias string
-	logPackageAlias     string
-	loggerType          string
+	loggerInfo			*loggerInfo
 }
 
-func NewLoggingMethodBuilder(structName string, methodConfig *astgen.MethodConfig, contextPackageAlias string, logPackageAlias string, loggerType string) *LoggingMethodBuilder {
+func NewLoggingMethodBuilder(structName string, methodConfig *astgen.MethodConfig, contextPackageAlias string, loggerInfo *loggerInfo) *LoggingMethodBuilder {
 	method := astgen.NewMethod(methodConfig.MethodName, "m", structName)
 
 	return &LoggingMethodBuilder{
 		methodConfig:        methodConfig,
 		method:              method,
-		loggerType:          loggerType,
 		contextPackageAlias: contextPackageAlias,
-		logPackageAlias:     logPackageAlias,
+		loggerInfo:     	 loggerInfo,
 	}
 }
 
@@ -296,7 +293,7 @@ func (b *LoggingMethodBuilder) Build() ast.Decl {
 	if n > 0 {
 		last := b.methodConfig.MethodResults[n-1]
 		if id, ok := last.Type.(*ast.Ident); ok && id.Name == "error" {
-			switch b.loggerType {
+			switch b.loggerInfo.name {
 			case "go_kit_log":
 				b.method.AddStatement(b.conditionalLogMessageStatementKitLog(b.methodConfig.MethodName, last.Names[0].Name))
 			case "zap":

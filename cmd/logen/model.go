@@ -10,6 +10,13 @@ import (
 	"github.com/Bo0mer/gentools/pkg/astgen"
 )
 
+type loggerInfo struct {
+	name          	string
+	packageAlias  	string
+	loggerType 		ast.Expr
+	fieldsType 		ast.Expr
+}
+
 type model struct {
 	fileBuilder *astgen.File
 	structName  string
@@ -17,11 +24,10 @@ type model struct {
 
 	contextPackageAlias string
 	timePackageAlias    string
-	loggerType          string
-	logPackageAlias		string
+	loggerInfo			*loggerInfo
 }
 
-func newModel(interfacePath, interfaceName, loggerType, structName, targetPkg string) *model {
+func newModel(interfacePath, interfaceName, loggerName, structName, targetPkg string) *model {
 	file := astgen.NewFile(targetPkg)
 	strct := astgen.NewStruct(structName)
 	file.AppendDeclaration(strct)
@@ -30,29 +36,25 @@ func newModel(interfacePath, interfaceName, loggerType, structName, targetPkg st
 		fileBuilder: file,
 		structName:  structName,
 		strct:       strct,
-		loggerType:  loggerType,
 	}
 
 	sourcePackageAlias := m.AddImport("", interfacePath)
 	m.contextPackageAlias = m.AddImport("", "context")
 
-	switch loggerType {
-	case "logrus":
-		m.logPackageAlias = m.AddImport("", "github.com/sirupsen/logrus")
+
+	switch loggerName {
 	case "go_kit_log":
-		m.logPackageAlias = m.AddImport("", "github.com/go-kit/kit/log")
+		m.loggerInfo = getKitLoggerInfo(m)
 	case "zap":
-		m.logPackageAlias = m.AddImport("", "go.uber.org/zap")
-	case "stdlog":
-		m.logPackageAlias = m.AddImport("", "log")
+		m.loggerInfo = getZapLoggerInfo(m)
 	}
 
-	constructorBuilder := newConstructorBuilder(m.logPackageAlias, sourcePackageAlias, interfaceName, m.contextPackageAlias)
+	constructorBuilder := newConstructorBuilder(sourcePackageAlias, interfaceName, m.contextPackageAlias, m.loggerInfo)
 	file.AppendDeclaration(constructorBuilder)
 
 	strct.AddField("next", sourcePackageAlias, interfaceName)
-	strct.AddField("logger", m.logPackageAlias, "Logger")
-	strct.AddFieldWithType("fields", fieldsFuncType(m.contextPackageAlias))
+	strct.AddFieldWithType("logger", m.loggerInfo.loggerType)
+	strct.AddFieldWithType("fields", fieldsFuncType(m.contextPackageAlias, m.loggerInfo))
 
 	return m
 }
@@ -72,7 +74,7 @@ func (m *model) AddImport(pkgName, location string) string {
 }
 
 func (m *model) AddMethod(method *astgen.MethodConfig) error {
-	mmb := NewLoggingMethodBuilder(m.structName, method, m.contextPackageAlias, m.logPackageAlias, m.loggerType)
+	mmb := NewLoggingMethodBuilder(m.structName, method, m.contextPackageAlias, m.loggerInfo)
 
 	m.fileBuilder.AppendDeclaration(mmb)
 	return nil
@@ -86,7 +88,7 @@ func (m *model) resolveInterfaceType(location, name string) *ast.SelectorExpr {
 	}
 }
 
-func fieldsFuncType(contextPackageAlias string) ast.Expr {
+func fieldsFuncType(contextPackageAlias string, info *loggerInfo) ast.Expr {
 	return &ast.FuncType{
 		Params: &ast.FieldList{List: []*ast.Field{
 			&ast.Field{
@@ -102,7 +104,9 @@ func fieldsFuncType(contextPackageAlias string) ast.Expr {
 			},
 		}},
 		Results: &ast.FieldList{List: []*ast.Field{
-			&ast.Field{Type: ast.NewIdent("[]interface{}")},
+			&ast.Field{Type: &ast.ArrayType{
+				Elt: info.fieldsType,
+			}},
 		}},
 	}
 }

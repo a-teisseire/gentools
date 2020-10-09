@@ -6,6 +6,20 @@ import (
 	"go/token"
 )
 
+func getKitLoggerInfo(m *model) *loggerInfo {
+	alias := m.AddImport("", "github.com/go-kit/kit/log")
+
+	return &loggerInfo{
+		name:         "go_kit_log",
+		packageAlias: alias,
+		loggerType:   &ast.SelectorExpr{
+			X:   ast.NewIdent(alias),
+			Sel: ast.NewIdent("Logger"),
+		},
+		fieldsType:   ast.NewIdent("interface{}"),
+	}
+}
+
 func (b *LoggingMethodBuilder) conditionalLogMessageStatementKitLog(methodName, errorResultName string) ast.Stmt {
 	// If the first parameter is context.Context, get additional log
 	// fields.
